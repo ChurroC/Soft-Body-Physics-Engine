@@ -13,6 +13,7 @@ https://developer.nvidia.com/gpugems/gpugems3/part-v-physics-simulation/chapter-
 https://lisyarus.github.io/blog/posts/perfect-collisions.html#section-you-spin
 https://gameprogrammingpatterns.com/spatial-partition.html
 https://gameidea.org/2024/02/02/physics-collision-detection/#Space_partitioning
+https://www.toptal.com/game/video-game-physics-part-i-an-introduction-to-rigid-body-dynamics
 
 IDEAS:
 use threads to run the colliison detection after the update. so it checks while the frames are being generated. so by the next tien the dt finished we will already have collisons detected.
