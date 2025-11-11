@@ -32,3 +32,8 @@ FUTURE OTHER PROJECTS:
 Fluid dynamics
 Rigid body dynamics
 Planet simulations
+
+
+
+
+Due to fluid dynamics being very similar to this and rigid body being mainly math and planets similar to fluid gonna end this project and hopefully take more advanced steps in other projects where I do stuff like this. Maybe next time I implement a paper like XPBD instead of using this basic soft body idea.
