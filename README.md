@@ -18,6 +18,8 @@ https://www.toptal.com/game/video-game-physics-part-i-an-introduction-to-rigid-b
 IDEAS:
 use threads to run the colliison detection after the update. so it checks while the frames are being generated. so by the next tien the dt finished we will already have collisons detected.
 
+matrix multiply the verlet integration to remove for loops and parallize the integration
+
 TODO:
 parallize the space partioning
 chains
