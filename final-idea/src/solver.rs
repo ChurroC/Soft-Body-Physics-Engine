@@ -10,6 +10,8 @@ pub struct Solver {
     grid_size: usize,
     grid_heads: Vec<usize>,
     grid_next: Vec<usize>,
+    sort_grid: usize,
+    grid_round: usize,
 }
 
 impl Solver {
@@ -20,7 +22,10 @@ impl Solver {
         subdivision: usize,
         cell_size: f32,
     ) -> Self {
-        let grid_size = (constraint_radius * 2.0 / cell_size) as usize;
+        // let grid_size = (constraint_radius * 2.0 / cell_size) as usize;
+        let grid_size = 128;
+        print!("Grid size: {}", grid_size);
+        print!("Grid cells: {}", grid_size * grid_size);
         Solver {
             verlets: verlets.iter().cloned().collect(),
             gravity,
@@ -30,6 +35,8 @@ impl Solver {
             grid_size,
             grid_heads: vec![usize::MAX; grid_size * grid_size],
             grid_next: vec![usize::MAX; verlets.len()],
+            sort_grid: 10000000,
+            grid_round: 0,
         }
     }
 
@@ -72,19 +79,67 @@ impl Solver {
         }
     }
 
+    fn part1by1(mut x: u32) -> u32 {
+        x &= 0x0000ffff; // x = ---- ---- ---- ---- fedc ba98 7654 3210
+        x = (x | (x << 8)) & 0x00ff00ff; // x = ---- ---- fedc ba98 ---- ---- 7654 3210
+        x = (x | (x << 4)) & 0x0f0f0f0f; // x = ---- fedc ---- ba98 ---- 7654 ---- 3210
+        x = (x | (x << 2)) & 0x33333333; // x = --fe --dc --ba --98 --76 --54 --32 --10
+        x = (x | (x << 1)) & 0x55555555; // x = -f-e -d-c -b-a -9-8 -7-6 -5-4 -3-2 -1-0
+        x
+    }
+
+    fn get_z_index(x: u32, y: u32) -> usize {
+        // Interleave the bits of x and y
+        ((Self::part1by1(y) << 1) | Self::part1by1(x)) as usize
+
+        // Initally had
+        /*
+        fn get_z_index(x: u32, y: u32) -> usize {
+            let mut z = 0;
+            for i in 0..16 {
+                z |= ((x & (1 << i)) << i) | ((y & (1 << i)) << (i + 1));
+            }
+            z as usize
+        }
+        */
+    }
+
+    fn compact1by1(mut x: u32) -> u32 {
+        x &= 0x55555555; // x = -f-e -d-c -b-a -9-8 -7-6 -5-4 -3-2 -1-0
+        x = (x | (x >> 1)) & 0x33333333; // x = --fe --dc --ba --98 --76 --54 --32 --10
+        x = (x | (x >> 2)) & 0x0f0f0f0f; // x = ---- fedc ---- ba98 ---- 7654 ---- 3210
+        x = (x | (x >> 4)) & 0x00ff00ff; // x = ---- ---- fedc ba98 ---- ---- 7654 3210
+        x = (x | (x >> 8)) & 0x0000ffff; // x = ---- ---- ---- ---- fedc ba98 7654 3210
+        x
+    }
+
+    fn decode_z_index(z: usize) -> (u32, u32) {
+        let z = z as u32;
+        (Self::compact1by1(z), Self::compact1by1(z >> 1))
+    }
+
     // 1322 balls - 6 rad - 8 subs - 16 ms
     fn find_collisions_space_partitioning(&mut self) -> Vec<(usize, usize)> {
         // When we had double Vec we had cache misses but here we almost have a linked list in order in memory so better cache??
+        // We now use Z order where up left right and down are close instead of left and right like in x and y order
+        // self.verlets.sort_by_key(|verlet| {
+        //     let pos = verlet.get_position();
+        //     let cx = (((pos.x + self.constraint_radius) / self.cell_size).max(0.0) as u32)
+        //         .min(self.grid_size as u32 - 1);
+        //     let cy = (((pos.y + self.constraint_radius) / self.cell_size).max(0.0) as u32)
+        //         .min(self.grid_size as u32 - 1);
+        //     Self::get_z_index(cx, cy)
+        // });
         let mut collisions: Vec<(usize, usize)> = vec![];
 
         self.grid_heads.fill(usize::MAX);
         if self.grid_next.len() != self.verlets.len() {
             self.grid_next.resize(self.verlets.len(), usize::MAX);
         }
+        self.grid_next.fill(usize::MAX);
 
         for (i, verlet) in self.verlets.iter().enumerate() {
             let pos = verlet.get_position();
-
             let cell_x = ((pos.x + self.constraint_radius) / self.cell_size) as i32;
             let cell_y = ((pos.y + self.constraint_radius) / self.cell_size) as i32;
 
@@ -93,8 +148,7 @@ impl Solver {
                 && cell_y >= 0
                 && cell_y < self.grid_size as i32
             {
-                let cell_index = (cell_y as usize * self.grid_size) + cell_x as usize;
-
+                let cell_index = Self::get_z_index(cell_x as u32, cell_y as u32);
                 // Link this verlet to the current head of the cell
                 self.grid_next[i] = self.grid_heads[cell_index];
                 // Make this verlet the new head
@@ -104,40 +158,41 @@ impl Solver {
 
         let neighbors = [(1, 0), (1, 1), (0, 1), (-1, 1)];
 
-        for y in 0..self.grid_size {
-            for x in 0..self.grid_size {
-                let cell_idx = y * self.grid_size + x;
+        for cell_idx in 0..self.grid_heads.len() {
+            let mut i_ptr = self.grid_heads[cell_idx];
+            if i_ptr == usize::MAX {
+                continue;
+            }
 
-                // Iterate through every verlet in THIS cell
-                let mut i_ptr = self.grid_heads[cell_idx];
-                while i_ptr != usize::MAX {
-                    let i = i_ptr;
+            // Iterate through every verlet in THIS cell
+            let (x, y) = Self::decode_z_index(cell_idx);
+            while i_ptr != usize::MAX {
+                let i = i_ptr;
 
-                    let mut j_ptr = self.grid_next[i]; // I'th
-                    while j_ptr != usize::MAX {
-                        let j = j_ptr;
-                        collisions.push((i.min(j), i.max(j)));
-                        j_ptr = self.grid_next[j];
-                    }
+                let mut j_ptr = self.grid_next[i]; // I'th on chain and check till the end
+                while j_ptr != usize::MAX {
+                    let j = j_ptr;
+                    collisions.push((i.min(j), i.max(j)));
+                    j_ptr = self.grid_next[j];
+                }
 
-                    for (dx, dy) in neighbors {
-                        let nx = x as i32 + dx;
-                        let ny = y as i32 + dy;
+                for (dx, dy) in neighbors {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
 
-                        if nx >= 0 && nx < self.grid_size as i32 && ny < self.grid_size as i32 {
-                            let neighbor_idx = (ny as usize * self.grid_size) + nx as usize;
+                    if nx >= 0 && nx < self.grid_size as i32 && ny < self.grid_size as i32 {
+                        let neighbor_idx = Self::get_z_index(nx as u32, ny as u32);
 
-                            let mut n_ptr = self.grid_heads[neighbor_idx];
-                            while n_ptr != usize::MAX {
-                                let j = n_ptr as usize;
-                                collisions.push((i.min(j), i.max(j)));
-                                n_ptr = self.grid_next[j];
-                            }
+                        let mut n_ptr = self.grid_heads[neighbor_idx];
+                        while n_ptr != usize::MAX {
+                            let j = n_ptr as usize;
+                            collisions.push((i.min(j), i.max(j)));
+                            n_ptr = self.grid_next[j];
                         }
                     }
-
-                    i_ptr = self.grid_next[i];
                 }
+
+                i_ptr = self.grid_next[i];
             }
         }
 
@@ -147,7 +202,14 @@ impl Solver {
     fn solve_collisions(&mut self, collisions: Vec<(usize, usize)>, dt: f32) {
         let coefficient_of_restitution = 0.93;
 
-        for (i, j) in collisions {
+        for (idx1, idx2) in collisions {
+            let i = idx1.min(idx2);
+            let j = idx2.max(idx1);
+
+            // 2. Check bounds to be safe
+            if j >= self.verlets.len() {
+                continue;
+            }
             let (left, right) = self.verlets.split_at_mut(j);
             let verlet1 = &mut left[i];
             let verlet2 = &mut right[0];
