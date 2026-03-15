@@ -23,3 +23,7 @@ so the change in velocity is -2v_1 since v_1f - v_1 = -v_1 - v_1 = -2v_1
 // Makes sense cause we get v cos of angle whic his projected onto the normal vector
 // Then we multiple by normal vector to vector distance
 // So easy way to show in code is prob v_normal = v . n * |n|^2
+
+
+False Sharing
+Matrix Mult
