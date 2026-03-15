@@ -6,13 +6,10 @@ pub struct Solver {
     gravity: Vec2,
     constraint_radius: f32,
     subdivision: usize,
-
     cell_size: f32,
     grid_size: usize,
-    grid_heads: Vec<i32>,
-    next_indices: Vec<i32>,
-
-    collision_pairs: Vec<(usize, usize)>,
+    grid_heads: Vec<usize>,
+    grid_next: Vec<usize>,
 }
 
 impl Solver {
@@ -31,9 +28,8 @@ impl Solver {
             subdivision,
             cell_size,
             grid_size,
-            grid_heads: vec![-1; grid_size * grid_size],
-            next_indices: vec![-1; verlets.len()],
-            collision_pairs: Vec::new(),
+            grid_heads: vec![usize::MAX; grid_size * grid_size],
+            grid_next: vec![usize::MAX; verlets.len()],
         }
     }
 
@@ -46,8 +42,8 @@ impl Solver {
 
             self.apply_wall_constraints(sub_dt);
 
-            self.find_collisions_space_partitioning();
-            self.solve_collisions(sub_dt);
+            let collisions: Vec<(usize, usize)> = self.find_collisions_space_partitioning();
+            self.solve_collisions(collisions, sub_dt);
 
             for verlet in &mut self.verlets {
                 verlet.update_position(sub_dt);
@@ -77,78 +73,83 @@ impl Solver {
     }
 
     // 1322 balls - 6 rad - 8 subs - 16 ms
-    fn find_collisions_space_partitioning(&mut self) {
+    fn find_collisions_space_partitioning(&mut self) -> Vec<(usize, usize)> {
         // When we had double Vec we had cache misses but here we almost have a linked list in order in memory so better cache??
-        self.collision_pairs.clear();
-        self.grid_heads.fill(-1);
+        let mut collisions: Vec<(usize, usize)> = vec![];
 
-        if self.next_indices.len() != self.verlets.len() {
-            self.next_indices.resize(self.verlets.len(), -1);
-        }
-        for i in 0..self.verlets.len() {
-            let pos = self.verlets[i].get_position();
-
-            let cell_x = (pos.x / self.cell_size).floor() as i32;
-            let cell_y = (pos.y / self.cell_size).floor() as i32;
-
-            // 2. Clamp the values so they stay inside the grid array
-            let cx = cell_x.clamp(0, (self.grid_size - 1) as i32) as usize;
-            let cy = cell_y.clamp(0, (self.grid_size - 1) as i32) as usize;
-
-            let cell_idx = (cy * self.grid_size) + cx;
-            self.next_indices[i] = self.grid_heads[cell_idx];
-            self.grid_heads[cell_idx] = i as i32;
+        self.grid_heads.fill(usize::MAX);
+        if self.grid_next.len() != self.verlets.len() {
+            self.grid_next.resize(self.verlets.len(), usize::MAX);
         }
 
-        let neighbor_offsets: [(i8, i8); 5] = [(0, 0), (1, 0), (0, 1), (1, 1), (-1, 1)];
+        for (i, verlet) in self.verlets.iter().enumerate() {
+            let pos = verlet.get_position();
+
+            let cell_x = ((pos.x + self.constraint_radius) / self.cell_size) as i32;
+            let cell_y = ((pos.y + self.constraint_radius) / self.cell_size) as i32;
+
+            if cell_x >= 0
+                && cell_x < self.grid_size as i32
+                && cell_y >= 0
+                && cell_y < self.grid_size as i32
+            {
+                let cell_index = (cell_y as usize * self.grid_size) + cell_x as usize;
+
+                // Link this verlet to the current head of the cell
+                self.grid_next[i] = self.grid_heads[cell_index];
+                // Make this verlet the new head
+                self.grid_heads[cell_index] = i;
+            }
+        }
+
+        let neighbors = [(1, 0), (1, 1), (0, 1), (-1, 1)];
 
         for y in 0..self.grid_size {
             for x in 0..self.grid_size {
-                // This logic correctly selects every cell in a checkerboard
-                let current_cell_idx = (y * self.grid_size + x) as usize;
+                let cell_idx = y * self.grid_size + x;
 
-                for (dx, dy) in neighbor_offsets {
-                    let nx = x as i32 + dx as i32;
-                    let ny = y as i32 + dy as i32;
+                // Iterate through every verlet in THIS cell
+                let mut i_ptr = self.grid_heads[cell_idx];
+                while i_ptr != usize::MAX {
+                    let i = i_ptr;
 
-                    if nx >= 0
-                        && nx < (self.grid_size as i32)
-                        && ny >= 0
-                        && ny < (self.grid_size as i32)
-                    {
-                        let target_cell_idx = (ny * (self.grid_size as i32) + nx) as usize;
+                    let mut j_ptr = self.grid_next[i]; // I'th
+                    while j_ptr != usize::MAX {
+                        let j = j_ptr;
+                        collisions.push((i.min(j), i.max(j)));
+                        j_ptr = self.grid_next[j];
+                    }
 
-                        let mut i = self.grid_heads[current_cell_idx];
-                        while i != -1 {
-                            // If checking the SAME cell, start 'j' at the ball AFTER 'i'
-                            // If checking a NEIGHBOR cell, start 'j' at the 'grid_head'
-                            let mut j = if dx == 0 && dy == 0 {
-                                self.next_indices[i as usize]
-                            } else {
-                                self.grid_heads[target_cell_idx]
-                            };
+                    for (dx, dy) in neighbors {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
 
-                            while j != -1 {
-                                // Now you don't even need 'if i < j' for (0,0)
-                                // because j is guaranteed to be a different ball further down the list
-                                self.collision_pairs.push((i as usize, j as usize));
+                        if nx >= 0 && nx < self.grid_size as i32 && ny < self.grid_size as i32 {
+                            let neighbor_idx = (ny as usize * self.grid_size) + nx as usize;
 
-                                j = self.next_indices[j as usize];
+                            let mut n_ptr = self.grid_heads[neighbor_idx];
+                            while n_ptr != usize::MAX {
+                                let j = n_ptr as usize;
+                                collisions.push((i.min(j), i.max(j)));
+                                n_ptr = self.grid_next[j];
                             }
-                            i = self.next_indices[i as usize];
                         }
                     }
+
+                    i_ptr = self.grid_next[i];
                 }
             }
         }
+
+        collisions
     }
 
-    fn solve_collisions(&mut self, dt: f32) {
+    fn solve_collisions(&mut self, collisions: Vec<(usize, usize)>, dt: f32) {
         let coefficient_of_restitution = 0.93;
 
-        for (i, j) in self.collision_pairs.iter() {
-            let (left, right) = self.verlets.split_at_mut(*j);
-            let verlet1 = &mut left[*i];
+        for (i, j) in collisions {
+            let (left, right) = self.verlets.split_at_mut(j);
+            let verlet1 = &mut left[i];
             let verlet2 = &mut right[0];
 
             let collision_axis = verlet1.get_position() - verlet2.get_position(); // This is the distance vector between the two verlets which is also the collision_axis vector to the plane of collison
@@ -204,7 +205,7 @@ impl Solver {
         density > 0.9 // or whatever threshold makes sense
     }
 
-    pub fn add_position(&mut self, mut verlet: Verlet) {
+    pub fn add_position(&mut self, verlet: Verlet) {
         self.verlets.push(verlet);
     }
 
