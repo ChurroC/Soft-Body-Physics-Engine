@@ -10,6 +10,7 @@ pub struct Solver {
     grid_size: usize,
     grid_heads: Vec<usize>,
     grid_next: Vec<usize>,
+    active_grid: Vec<usize>,
     sort_grid: usize,
     grid_round: usize,
 }
@@ -24,8 +25,12 @@ impl Solver {
     ) -> Self {
         // let grid_size = (constraint_radius * 2.0 / cell_size) as usize;
         let grid_size = 128;
-        print!("Grid size: {}", grid_size);
-        print!("Grid cells: {}", grid_size * grid_size);
+        println!();
+        println!("Grid size: {}", grid_size);
+        println!(
+            "Grid size best: {}",
+            (constraint_radius * 2.0 / cell_size) as usize
+        );
         Solver {
             verlets: verlets.iter().cloned().collect(),
             gravity,
@@ -35,7 +40,8 @@ impl Solver {
             grid_size,
             grid_heads: vec![usize::MAX; grid_size * grid_size],
             grid_next: vec![usize::MAX; verlets.len()],
-            sort_grid: 10000000,
+            active_grid: Vec::new(),
+            sort_grid: 100,
             grid_round: 0,
         }
     }
@@ -122,16 +128,31 @@ impl Solver {
     fn find_collisions_space_partitioning(&mut self) -> Vec<(usize, usize)> {
         // When we had double Vec we had cache misses but here we almost have a linked list in order in memory so better cache??
         // We now use Z order where up left right and down are close instead of left and right like in x and y order
-        // self.verlets.sort_by_key(|verlet| {
-        //     let pos = verlet.get_position();
-        //     let cx = (((pos.x + self.constraint_radius) / self.cell_size).max(0.0) as u32)
-        //         .min(self.grid_size as u32 - 1);
-        //     let cy = (((pos.y + self.constraint_radius) / self.cell_size).max(0.0) as u32)
-        //         .min(self.grid_size as u32 - 1);
-        //     Self::get_z_index(cx, cy)
-        // });
+        self.grid_round += 1;
+        if self.grid_round % self.sort_grid == 0 {
+            let radius = self.constraint_radius;
+            let c_size = self.cell_size;
+            let g_size_m1 = (self.grid_size as u32).saturating_sub(1);
+
+            // 2. Use unstable sort for a ~20-30% speed boost
+            self.verlets.sort_unstable_by_key(|verlet| {
+                let pos = verlet.get_position();
+
+                // 3. Use .clamp() or manual min/max with the local variables
+                // This is faster than repeated self. accesses
+                let cx = ((pos.x + radius) / c_size).max(0.0) as u32;
+                let cy = ((pos.y + radius) / c_size).max(0.0) as u32;
+
+                let cx = cx.min(g_size_m1);
+                let cy = cy.min(g_size_m1);
+
+                // 4. Call the associated function directly
+                Solver::get_z_index(cx, cy)
+            });
+        }
         let mut collisions: Vec<(usize, usize)> = vec![];
 
+        self.active_grid.clear();
         self.grid_heads.fill(usize::MAX);
         if self.grid_next.len() != self.verlets.len() {
             self.grid_next.resize(self.verlets.len(), usize::MAX);
@@ -149,6 +170,10 @@ impl Solver {
                 && cell_y < self.grid_size as i32
             {
                 let cell_index = Self::get_z_index(cell_x as u32, cell_y as u32);
+
+                if self.grid_heads[cell_index] == usize::MAX {
+                    self.active_grid.push(cell_index); // Only track cells that actually HAVE balls
+                }
                 // Link this verlet to the current head of the cell
                 self.grid_next[i] = self.grid_heads[cell_index];
                 // Make this verlet the new head
@@ -156,9 +181,9 @@ impl Solver {
             }
         }
 
-        let neighbors = [(1, 0), (1, 1), (0, 1), (-1, 1)];
+        let neighbors = [(1, 0), (0, 1), (1, 1), (-1, 1)];
 
-        for cell_idx in 0..self.grid_heads.len() {
+        for &cell_idx in &self.active_grid {
             let mut i_ptr = self.grid_heads[cell_idx];
             if i_ptr == usize::MAX {
                 continue;
